@@ -98,6 +98,45 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
 	//   and the following is a good resource for the actual equation to implement (look at equation 
 	//   3.33
 	//   http://planning.cs.uiuc.edu/node99.html
+
+	vector<LandmarkObs> predicted;
+	predicted.reserve(observations.size());
+	for (int i = 0; i < num_particles; i++) {
+		Particle &particle = particles[i];
+
+		// for each observation find best landmark with local coordinate system, aka, dataAssociation
+		// but the api they provided seem not right, em, predicated should be a ref and observations be const ref
+		transform(observations.cbegin(), observations.cend(), predicted.begin(),
+				[particle, map_landmarks](const LandmarkObs &observation) {
+			// local to world system, rotate -theta and translate t
+			auto x_f = observation.x * cos(-particle.theta) + observation.y * sin(-particle.theta);
+			x_f += particle.x;
+			auto y_f = observation.y * cos(-particle.theta) - observation.x * sin(-particle.theta);
+			y_f += particle.y;
+			auto landmark = min_element(map_landmarks.landmark_list.cbegin(), map_landmarks.landmark_list.cend(),
+					[x_f, y_f](const Map::single_landmark_s &a, const Map::single_landmark_s &b) {
+				return ((a.x_f - x_f + b.x_f - x_f) * (a.x_f - b.x_f) + (a.y_f - y_f + b.y_f - y_f) * (a.y_f - b.y_f)) < 0;
+			});
+			// world to local coord, translate -t and rotate theta
+			auto xt = landmark->x_f - particle.x;
+			auto yt = landmark->y_f - particle.y;
+			auto x = xt * cos(particle.theta) + yt * sin(particle.theta);
+			auto y = yt * cos(particle.theta) - xt * sin(particle.theta);
+			return LandmarkObs{landmark->id_i, x, y};
+		});
+
+		double term_x = 0;
+		double term_y = 0;
+		for(int j = 0; j< observations.size();j++) {
+			const auto &y = observations[j];
+			const auto &y_pred = predicted[j];
+
+			term_x += pow(y.x - y_pred.x, 2);
+			term_y += pow(y.y - y_pred.y, 2);
+		}
+		particle.weight = exp(-0.5 * (term_x / pow(std_landmark[0], 2) + term_y / pow(std_landmark[1], 2)));
+		weights[i] = particle.weight;
+	}
 }
 
 void ParticleFilter::resample() {
@@ -105,6 +144,15 @@ void ParticleFilter::resample() {
 	// NOTE: You may find std::discrete_distribution helpful here.
 	//   http://en.cppreference.com/w/cpp/numeric/random/discrete_distribution
 
+	default_random_engine engine;
+	discrete_distribution<int> sampler(this->weights.begin(), this->weights.end());
+
+	vector<Particle> nparticles;
+	nparticles.reserve(this->particles.size());
+	for (int i = 0; i < this->num_particles; i++) {
+		nparticles.push_back(this->particles[sampler(engine)]);
+	}
+	this->particles = nparticles;
 }
 
 Particle ParticleFilter::SetAssociations(Particle& particle, const std::vector<int>& associations, 
